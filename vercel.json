@@ -77,24 +77,8 @@
       ]
     }
   ],
-  "functions": {
-    "src/api/**/*.ts": {
-      "runtime": "@vercel/node"
-    }
-  },
   "env": {
     "VITE_APP_VERSION": "1.0.0",
     "VITE_APP_NAME": "SpontaneousConnect"
-  },
-  "build": {
-    "env": {
-      "VITE_SUPABASE_URL": "@supabase_url",
-      "VITE_SUPABASE_ANON_KEY": "@supabase_anon_key",
-      "VITE_EMAILJS_SERVICE_ID": "@emailjs_service_id",
-      "VITE_EMAILJS_TEMPLATE_ID": "@emailjs_template_id",
-      "VITE_EMAILJS_PUBLIC_KEY": "@emailjs_public_key",
-      "VITE_SENTRY_DSN": "@sentry_dsn",
-      "VITE_POSTHOG_KEY": "@posthog_key"
-    }
   }
 }
