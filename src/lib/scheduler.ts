@@ -15,6 +15,7 @@ import {
 } from '@/types';
 import { logger, withPerformanceLogging, withErrorLogging } from './logger';
 import { ValidationError, AppError } from '@/types';
+import { TIMING } from '@/constants';
 
 /**
  * Core scheduling engine that generates optimal call times
@@ -552,7 +553,7 @@ export class CallScheduler {
     }
 
     // Add some randomness (±15 minutes) to avoid predictability
-    const randomOffset = (Math.random() - 0.5) * 30; // -15 to +15 minutes
+    const randomOffset = (Math.random() - 0.5) * TIMING.RANDOMIZATION_WINDOW_MINUTES;
     proposedTime.setMinutes(proposedTime.getMinutes() + randomOffset);
 
     return proposedTime;

@@ -68,6 +68,7 @@ export function useScheduler(user: User | null): SchedulerState & SchedulerActio
     return () => {
       if (countdownIntervalRef.current) {
         clearInterval(countdownIntervalRef.current);
+        countdownIntervalRef.current = null;
       }
     };
   }, [user]);
@@ -104,6 +105,7 @@ export function useScheduler(user: User | null): SchedulerState & SchedulerActio
     return () => {
       if (countdownIntervalRef.current) {
         clearInterval(countdownIntervalRef.current);
+        countdownIntervalRef.current = null;
       }
     };
   }, [state.nextCallTime, user?.id]);

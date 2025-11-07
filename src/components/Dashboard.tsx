@@ -21,6 +21,7 @@ import {
 import { User as UserType, Platform } from '@/types';
 import { useScheduler } from '@/hooks/useScheduler';
 import { logger } from '@/lib/logger';
+import { TIMING } from '@/constants';
 
 interface DashboardProps {
   user: UserType;
@@ -105,20 +106,31 @@ const Dashboard: React.FC<DashboardProps> = ({
           }
           break;
         case 'sms':
-          window.open(`sms:${phone}?body=Hey ${user.partner_name}! 😊`);
+          // Sanitize user input for URL to prevent injection
+          const sanitizedName = encodeURIComponent(user.partner_name);
+          window.open(`sms:${phone}?body=Hey ${sanitizedName}! 😊`);
           break;
       }
 
+      // Log action without PII (partner name removed for privacy)
       logger.logUserAction('call_initiated', user.id, {
         platform,
-        scheduledTime: nextCallTime.toISOString(),
-        partnerName: user.partner_name
+        scheduledTime: nextCallTime.toISOString()
       });
 
-      // Generate next call automatically
-      setTimeout(() => {
-        handleGenerateCall();
-      }, 1000);
+      // Generate next call automatically with error handling
+      setTimeout(async () => {
+        try {
+          await handleGenerateCall();
+        } catch (error) {
+          logger.error('Auto-generation after call failed', {
+            userId: user.id,
+            component: 'Dashboard',
+            action: 'autoGenerateAfterCall',
+            metadata: { error }
+          });
+        }
+      }, TIMING.AUTO_GENERATE_DELAY_MS);
     } catch (error) {
       logger.error('Failed to initiate call', {
         userId: user.id,
@@ -136,10 +148,19 @@ const Dashboard: React.FC<DashboardProps> = ({
       await markCallAttempted('skipped');
       logger.logUserAction('call_skipped', user.id);
 
-      // Generate next call
-      setTimeout(() => {
-        handleGenerateCall();
-      }, 500);
+      // Generate next call with error handling
+      setTimeout(async () => {
+        try {
+          await handleGenerateCall();
+        } catch (error) {
+          logger.error('Auto-generation after skip failed', {
+            userId: user.id,
+            component: 'Dashboard',
+            action: 'autoGenerateAfterSkip',
+            metadata: { error }
+          });
+        }
+      }, TIMING.SKIP_CALL_DELAY_MS);
     } catch (error) {
       logger.error('Failed to skip call', {
         userId: user.id,
@@ -180,7 +201,7 @@ const Dashboard: React.FC<DashboardProps> = ({
     return 'Good evening';
   };
 
-  const isTimeToCall = nextCallTime && new Date() >= new Date(nextCallTime.getTime() - 5 * 60000);
+  const isTimeToCall = nextCallTime && new Date() >= new Date(nextCallTime.getTime() - TIMING.CALL_TIME_TOLERANCE_MINUTES * 60000);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-indigo-50">
@@ -352,14 +373,15 @@ const Dashboard: React.FC<DashboardProps> = ({
             </div>
           )}
 
-          {/* Quick Stats */}
+          {/* Quick Stats - TODO: Connect to real analytics data */}
+          {/* Temporarily removed hardcoded statistics until backend analytics are implemented
           <div className="grid grid-cols-2 gap-4 mb-6">
             <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
               <div className="flex items-center space-x-2 mb-2">
                 <TrendingUp className="w-4 h-4 text-blue-500" />
                 <span className="text-sm font-medium text-gray-600">This Week</span>
               </div>
-              <p className="text-2xl font-bold text-gray-900">12</p>
+              <p className="text-2xl font-bold text-gray-900">--</p>
               <p className="text-xs text-gray-500">Successful calls</p>
             </div>
 
@@ -368,10 +390,11 @@ const Dashboard: React.FC<DashboardProps> = ({
                 <Heart className="w-4 h-4 text-red-500" />
                 <span className="text-sm font-medium text-gray-600">Streak</span>
               </div>
-              <p className="text-2xl font-bold text-gray-900">7</p>
+              <p className="text-2xl font-bold text-gray-900">--</p>
               <p className="text-xs text-gray-500">Days connected</p>
             </div>
           </div>
+          */}
 
           {/* Quick Actions Grid */}
           <div className="grid grid-cols-2 gap-4">

@@ -52,7 +52,8 @@ CREATE TABLE users (
   email TEXT UNIQUE NOT NULL,
   name TEXT NOT NULL CHECK (length(name) >= 1 AND length(name) <= 100),
   partner_name TEXT NOT NULL CHECK (length(partner_name) >= 1 AND length(partner_name) <= 100),
-  partner_phone TEXT CHECK (partner_phone ~ '^\+?[\d\s\-\(\)]+$'),
+  -- E.164 international phone format: +[country code][number] (max 15 digits)
+  partner_phone TEXT CHECK (partner_phone IS NULL OR partner_phone ~ '^\+?[1-9]\d{1,14}$'),
   daily_call_limit INTEGER DEFAULT 3 CHECK (daily_call_limit > 0 AND daily_call_limit <= 10),
   active_days TEXT DEFAULT 'Mon,Tue,Wed,Thu,Fri,Sat,Sun' NOT NULL,
   morning_start TIME DEFAULT '09:00' NOT NULL,
