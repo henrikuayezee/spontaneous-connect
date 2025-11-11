@@ -120,6 +120,19 @@ npm run commit          # Conventional commits with Commitizen
 
 ## 🚀 Deployment
 
+> **⚠️ IMPORTANT**: Before deploying, you must configure environment variables in Vercel. See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed instructions.
+
+### Quick Deploy to Vercel
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/henrikuayezee/spontaneous-connect)
+
+**After deploying, you MUST:**
+1. Configure environment variables in Vercel (Settings → Environment Variables)
+2. Add `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`
+3. Redeploy the application
+
+See **[DEPLOYMENT.md](DEPLOYMENT.md)** for complete setup instructions.
+
 ### Automatic Deployment
 
 The app automatically deploys on:
@@ -143,7 +156,7 @@ npx vercel --prod
 ### Environment Variables
 
 ```bash
-# Required for all environments
+# ⚠️ Required for all environments (must be set in Vercel dashboard)
 VITE_SUPABASE_URL=your_supabase_project_url
 VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
 
@@ -154,6 +167,8 @@ VITE_EMAILJS_PUBLIC_KEY=your_emailjs_public_key
 VITE_SENTRY_DSN=your_sentry_dsn
 VITE_POSTHOG_KEY=your_posthog_key
 ```
+
+**📖 Complete deployment guide:** See [DEPLOYMENT.md](DEPLOYMENT.md)
 
 ## 📊 Performance Metrics
 
