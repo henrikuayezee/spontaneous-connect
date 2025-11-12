@@ -8,8 +8,7 @@
 -- Enable UUID generation
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- Enable Row Level Security globally
-ALTER DATABASE postgres SET row_security = on;
+-- Note: Row Level Security is enabled per table (see RLS section below)
 
 -- ==========================================
 -- CUSTOM TYPES
@@ -75,7 +74,7 @@ CREATE TABLE users (
 
 -- Call history table with partitioning support
 CREATE TABLE call_history (
-  id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  id UUID DEFAULT uuid_generate_v4(),
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   scheduled_time TIMESTAMPTZ NOT NULL,
   actual_time TIMESTAMPTZ,
@@ -85,6 +84,9 @@ CREATE TABLE call_history (
   notes TEXT,
   metadata JSONB,
   created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+
+  -- Primary key must include partition key for partitioned tables
+  PRIMARY KEY (id, created_at),
 
   -- Constraints
   CONSTRAINT valid_actual_time CHECK (
@@ -357,33 +359,11 @@ CREATE INDEX idx_daily_patterns_hour ON daily_call_patterns (hour_of_day);
 -- INITIAL DATA SETUP
 -- ==========================================
 
--- Create default blocked time templates (these can be copied by users)
-INSERT INTO blocked_times (
-  id, user_id, block_name, start_time, end_time,
-  repeat_type, days_of_week, priority, is_active
-) VALUES
-  (
-    '00000000-0000-0000-0000-000000000001',
-    '00000000-0000-0000-0000-000000000000', -- Template user
-    'Work Hours',
-    '09:00', '17:00',
-    'weekdays', NULL, 5, false
-  ),
-  (
-    '00000000-0000-0000-0000-000000000002',
-    '00000000-0000-0000-0000-000000000000',
-    'Sleep Time',
-    '23:00', '07:00',
-    'daily', NULL, 8, false
-  ),
-  (
-    '00000000-0000-0000-0000-000000000003',
-    '00000000-0000-0000-0000-000000000000',
-    'Lunch Break',
-    '12:00', '13:00',
-    'weekdays', NULL, 3, false
-  )
-ON CONFLICT (id) DO NOTHING;
+-- No initial data required - users will create their own blocked times
+-- Note: For overnight blocks (e.g., sleep from 23:00 to 07:00), users should create two separate blocks:
+-- 1. Late Evening: 22:00 - 23:59
+-- 2. Early Morning: 00:00 - 08:00
+-- This works around the TIME constraint that start_time must be less than end_time
 
 -- ==========================================
 -- PERFORMANCE ANALYSIS QUERIES
@@ -420,10 +400,7 @@ $$ language 'plpgsql';
 -- SECURITY HARDENING
 -- ==========================================
 
--- Revoke default permissions
-REVOKE ALL ON DATABASE postgres FROM public;
-REVOKE ALL ON SCHEMA public FROM public;
-
+-- Note: In Supabase, permissions are managed by the platform
 -- Grant specific permissions to authenticated users
 GRANT USAGE ON SCHEMA public TO authenticated;
 GRANT ALL ON ALL TABLES IN SCHEMA public TO authenticated;
@@ -440,13 +417,10 @@ ALTER TABLE schedule_helper FORCE ROW LEVEL SECURITY;
 -- FINAL OPTIMIZATIONS
 -- ==========================================
 
--- Vacuum and analyze all tables for optimal performance
-VACUUM ANALYZE users;
-VACUUM ANALYZE call_history;
-VACUUM ANALYZE blocked_times;
-VACUUM ANALYZE schedule_helper;
+-- Note: VACUUM commands may not be available in Supabase managed environment
+-- Supabase handles vacuum automatically
 
--- Update table statistics
+-- Update table statistics for query optimization
 ANALYZE users;
 ANALYZE call_history;
 ANALYZE blocked_times;
