@@ -8,8 +8,7 @@
 -- Enable UUID generation
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- Enable Row Level Security globally
-ALTER DATABASE postgres SET row_security = on;
+-- Note: Row Level Security is enabled per table (see RLS section below)
 
 -- ==========================================
 -- CUSTOM TYPES
@@ -401,10 +400,7 @@ $$ language 'plpgsql';
 -- SECURITY HARDENING
 -- ==========================================
 
--- Revoke default permissions
-REVOKE ALL ON DATABASE postgres FROM public;
-REVOKE ALL ON SCHEMA public FROM public;
-
+-- Note: In Supabase, permissions are managed by the platform
 -- Grant specific permissions to authenticated users
 GRANT USAGE ON SCHEMA public TO authenticated;
 GRANT ALL ON ALL TABLES IN SCHEMA public TO authenticated;
@@ -421,13 +417,10 @@ ALTER TABLE schedule_helper FORCE ROW LEVEL SECURITY;
 -- FINAL OPTIMIZATIONS
 -- ==========================================
 
--- Vacuum and analyze all tables for optimal performance
-VACUUM ANALYZE users;
-VACUUM ANALYZE call_history;
-VACUUM ANALYZE blocked_times;
-VACUUM ANALYZE schedule_helper;
+-- Note: VACUUM commands may not be available in Supabase managed environment
+-- Supabase handles vacuum automatically
 
--- Update table statistics
+-- Update table statistics for query optimization
 ANALYZE users;
 ANALYZE call_history;
 ANALYZE blocked_times;
