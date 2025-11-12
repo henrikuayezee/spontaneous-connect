@@ -75,7 +75,7 @@ CREATE TABLE users (
 
 -- Call history table with partitioning support
 CREATE TABLE call_history (
-  id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  id UUID DEFAULT uuid_generate_v4(),
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   scheduled_time TIMESTAMPTZ NOT NULL,
   actual_time TIMESTAMPTZ,
@@ -85,6 +85,9 @@ CREATE TABLE call_history (
   notes TEXT,
   metadata JSONB,
   created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+
+  -- Primary key must include partition key for partitioned tables
+  PRIMARY KEY (id, created_at),
 
   -- Constraints
   CONSTRAINT valid_actual_time CHECK (
