@@ -361,6 +361,7 @@ CREATE INDEX idx_daily_patterns_hour ON daily_call_patterns (hour_of_day);
 -- ==========================================
 
 -- Create default blocked time templates (these can be copied by users)
+-- Note: Template entries are disabled (is_active = false) and use a special template user ID
 INSERT INTO blocked_times (
   id, user_id, block_name, start_time, end_time,
   repeat_type, days_of_week, priority, is_active
@@ -375,18 +376,30 @@ INSERT INTO blocked_times (
   (
     '00000000-0000-0000-0000-000000000002',
     '00000000-0000-0000-0000-000000000000',
-    'Sleep Time',
-    '23:00', '07:00',
-    'daily', NULL, 8, false
+    'Lunch Break',
+    '12:00', '13:00',
+    'weekdays', NULL, 3, false
   ),
   (
     '00000000-0000-0000-0000-000000000003',
     '00000000-0000-0000-0000-000000000000',
-    'Lunch Break',
-    '12:00', '13:00',
-    'weekdays', NULL, 3, false
+    'Early Morning',
+    '00:00', '08:00',
+    'daily', NULL, 7, false
+  ),
+  (
+    '00000000-0000-0000-0000-000000000004',
+    '00000000-0000-0000-0000-000000000000',
+    'Late Evening',
+    '22:00', '23:59',
+    'daily', NULL, 7, false
   )
 ON CONFLICT (id) DO NOTHING;
+
+-- Note: For overnight blocks (e.g., sleep from 23:00 to 07:00), create two separate blocks:
+-- 1. Late Evening: 22:00 - 23:59
+-- 2. Early Morning: 00:00 - 08:00
+-- This works around the TIME constraint that start_time must be less than end_time
 
 -- ==========================================
 -- PERFORMANCE ANALYSIS QUERIES
