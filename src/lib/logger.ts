@@ -3,6 +3,9 @@
  * Follows industry best practices for observability and debugging
  */
 
+import { analytics } from '@/lib/analytics';
+import { monitoring } from '@/lib/monitoring';
+
 export enum LogLevel {
   DEBUG = 0,
   INFO = 1,
@@ -194,22 +197,12 @@ class Logger {
   }
 
   private async sendToSentry(entry: LogEntry): Promise<void> {
-    // Integration with Sentry (when configured)
-    if (typeof window !== 'undefined' && (window as any).Sentry) {
-      const Sentry = (window as any).Sentry;
-
-      Sentry.withScope((scope: any) => {
-        scope.setLevel(entry.level >= LogLevel.ERROR ? 'error' : 'warning');
-        scope.setContext('logContext', entry.context);
-        scope.setFingerprint([entry.fingerprint || entry.message]);
-
-        if (entry.context.userId) {
-          scope.setUser({ id: entry.context.userId });
-        }
-
-        Sentry.captureMessage(entry.message);
-      });
-    }
+    // Integration with Sentry
+    monitoring.captureException(new Error(entry.message), {
+      level: LogLevel[entry.level],
+      context: entry.context,
+      fingerprint: entry.fingerprint
+    });
   }
 
   public debug(message: string, context: LogContext = {}): void {
@@ -283,6 +276,9 @@ class Logger {
       action,
       metadata,
     });
+
+    // Track in analytics
+    analytics.track(action, metadata);
   }
 
   public logPerformance(metric: string, value: number, context: LogContext = {}): void {

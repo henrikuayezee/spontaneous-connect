@@ -6,7 +6,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { User as SupabaseUser, Session } from '@supabase/supabase-js';
 import { User } from '@/types';
-import { auth, db } from '@/lib/supabase';
+import { supabase, db } from '@/lib/supabase';
 import { logger } from '@/lib/logger';
 import { AuthenticationError, ValidationError } from '@/types';
 
@@ -45,7 +45,7 @@ export function useAuth(): AuthState & AuthActions {
     const initializeAuth = async () => {
       try {
         // Get current session
-        const { data: { session }, error } = await auth.supabase.auth.getSession();
+        const { data: { session }, error } = await supabase.auth.getSession();
 
         if (error) {
           logger.error('Failed to get session', {
@@ -85,7 +85,7 @@ export function useAuth(): AuthState & AuthActions {
     initializeAuth();
 
     // Set up auth state listener
-    const { data: { subscription } } = auth.supabase.auth.onAuthStateChange(
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
         if (!mounted) return;
 
@@ -264,7 +264,13 @@ export function useAuth(): AuthState & AuthActions {
       }
 
       // Sign up with Supabase Auth
-      const { user: supabaseUser, session } = await auth.signUp(email, password);
+      const { data: { user: supabaseUser, session }, error: authError } = await supabase.auth.signUp({
+        email,
+        password
+      });
+
+      if (authError) throw authError;
+      if (!supabaseUser) throw new Error('Sign up failed');
 
       // Create user profile
       const userProfile = await db.createUserProfile({
@@ -326,7 +332,13 @@ export function useAuth(): AuthState & AuthActions {
         throw new ValidationError('Email and password are required');
       }
 
-      const { user: supabaseUser, session } = await auth.signIn(email, password);
+      const { data: { user: supabaseUser, session }, error: authError } = await supabase.auth.signInWithPassword({
+        email,
+        password
+      });
+
+      if (authError) throw authError;
+      if (!supabaseUser) throw new Error('Sign in failed');
 
       // Load user profile
       await loadUserProfile(supabaseUser.id);
@@ -366,7 +378,7 @@ export function useAuth(): AuthState & AuthActions {
     try {
       setState(prev => ({ ...prev, isLoading: true, error: null }));
 
-      await auth.signOut();
+      await supabase.auth.signOut();
 
       // Clear any cached data
       await db.cleanup();

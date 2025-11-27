@@ -330,469 +330,456 @@ export class DatabaseService {
       if (error) throw this.transformError(error, 'getUserProfile');
       if (!data) throw new ValidationError('User not found');
 
-      this.setCache(cacheKey, data);
-      return data;
-    }, 'getUserProfile');
-  }
+      version: 1
+    })
+      .select()
+      .single();
 
-  @withPerformanceLogging
-  @withErrorLogging
-  public async createUserProfile(user: Omit<User, 'id' | 'created_at' | 'updated_at' | 'version'>): Promise<User> {
-    return this.withRetry(async () => {
-      const { data, error } = await this.client
-        .from('users')
-        .insert({
-          ...user,
-          version: 1
-        })
-        .select()
-        .single();
+    if (error) throw this.transformError(error, 'createUserProfile');
 
-      if (error) throw this.transformError(error, 'createUserProfile');
+    // Initialize schedule helper for new user
+    await this.createScheduleHelper(data.id);
 
-      // Initialize schedule helper for new user
-      await this.createScheduleHelper(data.id);
+    logger.info('User profile created', {
+      userId: data.id,
+      component: 'DatabaseService',
+      action: 'createUserProfile'
+    });
 
-      logger.info('User profile created', {
-        userId: data.id,
-        component: 'DatabaseService',
-        action: 'createUserProfile'
-      });
+    return data;
+  }, 'createUserProfile');
+}
 
-      return data;
-    }, 'createUserProfile');
-  }
+@withPerformanceLogging
+@withErrorLogging
+public async updateUserProfile(
+  userId: string,
+  updates: Partial<User>,
+  expectedVersion ?: number
+): Promise < User > {
+  return this.withRetry(async () => {
+    let query = this.client
+      .from('users')
+      .update({
+        ...updates,
+        updated_at: new Date().toISOString(),
+        version: expectedVersion ? expectedVersion + 1 : undefined
+      })
+      .eq('id', userId);
 
-  @withPerformanceLogging
-  @withErrorLogging
-  public async updateUserProfile(
-    userId: string,
-    updates: Partial<User>,
-    expectedVersion?: number
-  ): Promise<User> {
-    return this.withRetry(async () => {
-      let query = this.client
-        .from('users')
-        .update({
-          ...updates,
-          updated_at: new Date().toISOString(),
-          version: expectedVersion ? expectedVersion + 1 : undefined
-        })
-        .eq('id', userId);
+    // Optimistic locking
+    if (expectedVersion !== undefined) {
+      query = query.eq('version', expectedVersion);
+    }
 
-      // Optimistic locking
-      if (expectedVersion !== undefined) {
-        query = query.eq('version', expectedVersion);
+    const { data, error } = await query.select().single();
+
+    if (error) {
+      if (error.code === 'PGRST116' && expectedVersion !== undefined) {
+        throw new ValidationError('User profile was modified by another process. Please refresh and try again.');
       }
+      throw this.transformError(error, 'updateUserProfile');
+    }
 
-      const { data, error } = await query.select().single();
+    this.invalidateUserCache(userId);
 
-      if (error) {
-        if (error.code === 'PGRST116' && expectedVersion !== undefined) {
-          throw new ValidationError('User profile was modified by another process. Please refresh and try again.');
-        }
-        throw this.transformError(error, 'updateUserProfile');
+    logger.info('User profile updated', {
+      userId,
+      component: 'DatabaseService',
+      action: 'updateUserProfile',
+      metadata: { updatedFields: Object.keys(updates) }
+    });
+
+    return data;
+  }, 'updateUserProfile');
+}
+
+// ====================
+// CALL HISTORY OPERATIONS
+// ====================
+
+@withPerformanceLogging
+@withErrorLogging
+public async getCallHistory(
+  userId: string,
+  limit: number = 50,
+  offset: number = 0
+): Promise < CallHistory[] > {
+  const cacheKey = this.getCacheKey('call_history', { userId, limit, offset });
+  const cached = this.getFromCache<CallHistory[]>(cacheKey);
+  if(cached) return cached;
+
+  return this.withRetry(async () => {
+    const { data, error } = await this.client
+      .from('call_history')
+      .select('*')
+      .eq('user_id', userId)
+      .order('scheduled_time', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (error) throw this.transformError(error, 'getCallHistory');
+
+    this.setCache(cacheKey, data || [], this.CACHE_TTL / 2); // Shorter TTL for dynamic data
+    return data || [];
+  }, 'getCallHistory');
+}
+
+@withPerformanceLogging
+@withErrorLogging
+public async addCallHistoryEntry(entry: Omit<CallHistory, 'id' | 'created_at'>): Promise < CallHistory > {
+  return this.withRetry(async () => {
+    const { data, error } = await this.client
+      .from('call_history')
+      .insert(entry)
+      .select()
+      .single();
+
+    if (error) throw this.transformError(error, 'addCallHistoryEntry');
+
+    this.invalidateCache(`call_history_${entry.user_id}`);
+
+    logger.info('Call history entry added', {
+      userId: entry.user_id,
+      component: 'DatabaseService',
+      action: 'addCallHistoryEntry',
+      metadata: {
+        status: entry.status,
+        platform: entry.platform_used,
+        scheduledTime: entry.scheduled_time
       }
+    });
 
-      this.invalidateUserCache(userId);
+    return data;
+  }, 'addCallHistoryEntry');
+}
 
-      logger.info('User profile updated', {
-        userId,
-        component: 'DatabaseService',
-        action: 'updateUserProfile',
-        metadata: { updatedFields: Object.keys(updates) }
-      });
+@withPerformanceLogging
+@withErrorLogging
+public async updateCallHistoryEntry(
+  entryId: string,
+  updates: Partial<CallHistory>
+): Promise < CallHistory > {
+  return this.withRetry(async () => {
+    const { data, error } = await this.client
+      .from('call_history')
+      .update(updates)
+      .eq('id', entryId)
+      .select()
+      .single();
 
-      return data;
-    }, 'updateUserProfile');
-  }
+    if (error) throw this.transformError(error, 'updateCallHistoryEntry');
 
-  // ====================
-  // CALL HISTORY OPERATIONS
-  // ====================
+    this.invalidateCache(`call_history_${data.user_id}`);
 
-  @withPerformanceLogging
-  @withErrorLogging
-  public async getCallHistory(
-    userId: string,
-    limit: number = 50,
-    offset: number = 0
-  ): Promise<CallHistory[]> {
-    const cacheKey = this.getCacheKey('call_history', { userId, limit, offset });
-    const cached = this.getFromCache<CallHistory[]>(cacheKey);
-    if (cached) return cached;
+    logger.info('Call history entry updated', {
+      userId: data.user_id,
+      component: 'DatabaseService',
+      action: 'updateCallHistoryEntry',
+      metadata: { entryId, updatedFields: Object.keys(updates) }
+    });
 
-    return this.withRetry(async () => {
-      const { data, error } = await this.client
-        .from('call_history')
-        .select('*')
-        .eq('user_id', userId)
-        .order('scheduled_time', { ascending: false })
-        .range(offset, offset + limit - 1);
+    return data;
+  }, 'updateCallHistoryEntry');
+}
 
-      if (error) throw this.transformError(error, 'getCallHistory');
+// ====================
+// BLOCKED TIMES OPERATIONS
+// ====================
 
-      this.setCache(cacheKey, data || [], this.CACHE_TTL / 2); // Shorter TTL for dynamic data
-      return data || [];
-    }, 'getCallHistory');
-  }
+@withPerformanceLogging
+@withErrorLogging
+public async getBlockedTimes(userId: string): Promise < BlockedTime[] > {
+  const cacheKey = this.getCacheKey('blocked_times', { userId });
+  const cached = this.getFromCache<BlockedTime[]>(cacheKey);
+  if(cached) return cached;
 
-  @withPerformanceLogging
-  @withErrorLogging
-  public async addCallHistoryEntry(entry: Omit<CallHistory, 'id' | 'created_at'>): Promise<CallHistory> {
-    return this.withRetry(async () => {
-      const { data, error } = await this.client
-        .from('call_history')
-        .insert(entry)
-        .select()
-        .single();
+  return this.withRetry(async () => {
+    const { data, error } = await this.client
+      .from('blocked_times')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('is_active', true)
+      .order('priority', { ascending: false });
 
-      if (error) throw this.transformError(error, 'addCallHistoryEntry');
+    if (error) throw this.transformError(error, 'getBlockedTimes');
 
-      this.invalidateCache(`call_history_${entry.user_id}`);
+    this.setCache(cacheKey, data || []);
+    return data || [];
+  }, 'getBlockedTimes');
+}
 
-      logger.info('Call history entry added', {
-        userId: entry.user_id,
-        component: 'DatabaseService',
-        action: 'addCallHistoryEntry',
-        metadata: {
-          status: entry.status,
-          platform: entry.platform_used,
-          scheduledTime: entry.scheduled_time
-        }
-      });
+@withPerformanceLogging
+@withErrorLogging
+public async addBlockedTime(blockedTime: Omit<BlockedTime, 'id' | 'created_at'>): Promise < BlockedTime > {
+  return this.withRetry(async () => {
+    const { data, error } = await this.client
+      .from('blocked_times')
+      .insert(blockedTime)
+      .select()
+      .single();
 
-      return data;
-    }, 'addCallHistoryEntry');
-  }
+    if (error) throw this.transformError(error, 'addBlockedTime');
 
-  @withPerformanceLogging
-  @withErrorLogging
-  public async updateCallHistoryEntry(
-    entryId: string,
-    updates: Partial<CallHistory>
-  ): Promise<CallHistory> {
-    return this.withRetry(async () => {
-      const { data, error } = await this.client
-        .from('call_history')
-        .update(updates)
-        .eq('id', entryId)
-        .select()
-        .single();
+    this.invalidateCache(`blocked_times_${blockedTime.user_id}`);
 
-      if (error) throw this.transformError(error, 'updateCallHistoryEntry');
-
-      this.invalidateCache(`call_history_${data.user_id}`);
-
-      logger.info('Call history entry updated', {
-        userId: data.user_id,
-        component: 'DatabaseService',
-        action: 'updateCallHistoryEntry',
-        metadata: { entryId, updatedFields: Object.keys(updates) }
-      });
-
-      return data;
-    }, 'updateCallHistoryEntry');
-  }
-
-  // ====================
-  // BLOCKED TIMES OPERATIONS
-  // ====================
-
-  @withPerformanceLogging
-  @withErrorLogging
-  public async getBlockedTimes(userId: string): Promise<BlockedTime[]> {
-    const cacheKey = this.getCacheKey('blocked_times', { userId });
-    const cached = this.getFromCache<BlockedTime[]>(cacheKey);
-    if (cached) return cached;
-
-    return this.withRetry(async () => {
-      const { data, error } = await this.client
-        .from('blocked_times')
-        .select('*')
-        .eq('user_id', userId)
-        .eq('is_active', true)
-        .order('priority', { ascending: false });
-
-      if (error) throw this.transformError(error, 'getBlockedTimes');
-
-      this.setCache(cacheKey, data || []);
-      return data || [];
-    }, 'getBlockedTimes');
-  }
-
-  @withPerformanceLogging
-  @withErrorLogging
-  public async addBlockedTime(blockedTime: Omit<BlockedTime, 'id' | 'created_at'>): Promise<BlockedTime> {
-    return this.withRetry(async () => {
-      const { data, error } = await this.client
-        .from('blocked_times')
-        .insert(blockedTime)
-        .select()
-        .single();
-
-      if (error) throw this.transformError(error, 'addBlockedTime');
-
-      this.invalidateCache(`blocked_times_${blockedTime.user_id}`);
-
-      logger.info('Blocked time added', {
-        userId: blockedTime.user_id,
-        component: 'DatabaseService',
-        action: 'addBlockedTime',
-        metadata: {
-          blockName: blockedTime.block_name,
-          timeRange: `${blockedTime.start_time}-${blockedTime.end_time}`,
-          repeatType: blockedTime.repeat_type
-        }
-      });
-
-      return data;
-    }, 'addBlockedTime');
-  }
-
-  @withPerformanceLogging
-  @withErrorLogging
-  public async updateBlockedTime(
-    blockId: string,
-    updates: Partial<BlockedTime>
-  ): Promise<BlockedTime> {
-    return this.withRetry(async () => {
-      const { data, error } = await this.client
-        .from('blocked_times')
-        .update(updates)
-        .eq('id', blockId)
-        .select()
-        .single();
-
-      if (error) throw this.transformError(error, 'updateBlockedTime');
-
-      this.invalidateCache(`blocked_times_${data.user_id}`);
-
-      logger.info('Blocked time updated', {
-        userId: data.user_id,
-        component: 'DatabaseService',
-        action: 'updateBlockedTime',
-        metadata: { blockId, updatedFields: Object.keys(updates) }
-      });
-
-      return data;
-    }, 'updateBlockedTime');
-  }
-
-  @withPerformanceLogging
-  @withErrorLogging
-  public async deleteBlockedTime(blockId: string, userId: string): Promise<void> {
-    return this.withRetry(async () => {
-      const { error } = await this.client
-        .from('blocked_times')
-        .delete()
-        .eq('id', blockId)
-        .eq('user_id', userId); // Security: ensure user owns the block
-
-      if (error) throw this.transformError(error, 'deleteBlockedTime');
-
-      this.invalidateCache(`blocked_times_${userId}`);
-
-      logger.info('Blocked time deleted', {
-        userId,
-        component: 'DatabaseService',
-        action: 'deleteBlockedTime',
-        metadata: { blockId }
-      });
-    }, 'deleteBlockedTime');
-  }
-
-  // ====================
-  // SCHEDULE HELPER OPERATIONS
-  // ====================
-
-  @withPerformanceLogging
-  @withErrorLogging
-  public async getScheduleHelper(userId: string): Promise<ScheduleHelper> {
-    const cacheKey = this.getCacheKey('schedule_helper', { userId });
-    const cached = this.getFromCache<ScheduleHelper>(cacheKey);
-    if (cached) return cached;
-
-    return this.withRetry(async () => {
-      const { data, error } = await this.client
-        .from('schedule_helper')
-        .select('*')
-        .eq('user_id', userId)
-        .single();
-
-      if (error) {
-        if (error.code === 'PGRST116') {
-          // Create if doesn't exist
-          return this.createScheduleHelper(userId);
-        }
-        throw this.transformError(error, 'getScheduleHelper');
+    logger.info('Blocked time added', {
+      userId: blockedTime.user_id,
+      component: 'DatabaseService',
+      action: 'addBlockedTime',
+      metadata: {
+        blockName: blockedTime.block_name,
+        timeRange: `${blockedTime.start_time}-${blockedTime.end_time}`,
+        repeatType: blockedTime.repeat_type
       }
+    });
 
-      this.setCache(cacheKey, data);
-      return data;
-    }, 'getScheduleHelper');
-  }
+    return data;
+  }, 'addBlockedTime');
+}
 
-  @withPerformanceLogging
-  @withErrorLogging
-  public async createScheduleHelper(userId: string): Promise<ScheduleHelper> {
-    return this.withRetry(async () => {
-      const { data, error } = await this.client
-        .from('schedule_helper')
-        .insert({
-          user_id: userId,
-          calls_today: 0,
-          daily_reset_date: new Date().toISOString().split('T')[0],
-          last_generated: new Date().toISOString(),
-          lock_version: 1
-        })
-        .select()
-        .single();
+@withPerformanceLogging
+@withErrorLogging
+public async updateBlockedTime(
+  blockId: string,
+  updates: Partial<BlockedTime>
+): Promise < BlockedTime > {
+  return this.withRetry(async () => {
+    const { data, error } = await this.client
+      .from('blocked_times')
+      .update(updates)
+      .eq('id', blockId)
+      .select()
+      .single();
 
-      if (error) throw this.transformError(error, 'createScheduleHelper');
+    if (error) throw this.transformError(error, 'updateBlockedTime');
 
-      logger.info('Schedule helper created', {
-        userId,
-        component: 'DatabaseService',
-        action: 'createScheduleHelper'
-      });
+    this.invalidateCache(`blocked_times_${data.user_id}`);
 
-      return data;
-    }, 'createScheduleHelper');
-  }
+    logger.info('Blocked time updated', {
+      userId: data.user_id,
+      component: 'DatabaseService',
+      action: 'updateBlockedTime',
+      metadata: { blockId, updatedFields: Object.keys(updates) }
+    });
 
-  @withPerformanceLogging
-  @withErrorLogging
-  public async updateScheduleHelper(
-    userId: string,
-    updates: Partial<ScheduleHelper>,
-    expectedLockVersion?: number
-  ): Promise<ScheduleHelper> {
-    return this.withRetry(async () => {
-      let query = this.client
-        .from('schedule_helper')
-        .update({
-          ...updates,
-          updated_at: new Date().toISOString(),
-          lock_version: expectedLockVersion ? expectedLockVersion + 1 : undefined
-        })
-        .eq('user_id', userId);
+    return data;
+  }, 'updateBlockedTime');
+}
 
-      // Optimistic locking for schedule updates
-      if (expectedLockVersion !== undefined) {
-        query = query.eq('lock_version', expectedLockVersion);
+@withPerformanceLogging
+@withErrorLogging
+public async deleteBlockedTime(blockId: string, userId: string): Promise < void> {
+  return this.withRetry(async () => {
+    const { error } = await this.client
+      .from('blocked_times')
+      .delete()
+      .eq('id', blockId)
+      .eq('user_id', userId); // Security: ensure user owns the block
+
+    if (error) throw this.transformError(error, 'deleteBlockedTime');
+
+    this.invalidateCache(`blocked_times_${userId}`);
+
+    logger.info('Blocked time deleted', {
+      userId,
+      component: 'DatabaseService',
+      action: 'deleteBlockedTime',
+      metadata: { blockId }
+    });
+  }, 'deleteBlockedTime');
+}
+
+// ====================
+// SCHEDULE HELPER OPERATIONS
+// ====================
+
+@withPerformanceLogging
+@withErrorLogging
+public async getScheduleHelper(userId: string): Promise < ScheduleHelper > {
+  const cacheKey = this.getCacheKey('schedule_helper', { userId });
+  const cached = this.getFromCache<ScheduleHelper>(cacheKey);
+  if(cached) return cached;
+
+  return this.withRetry(async () => {
+    const { data, error } = await this.client
+      .from('schedule_helper')
+      .select('*')
+      .eq('user_id', userId)
+      .single();
+
+    if (error) {
+      if (error.code === 'PGRST116') {
+        // Create if doesn't exist
+        return this.createScheduleHelper(userId);
       }
+      throw this.transformError(error, 'getScheduleHelper');
+    }
 
-      const { data, error } = await query.select().single();
+    this.setCache(cacheKey, data);
+    return data;
+  }, 'getScheduleHelper');
+}
 
-      if (error) {
-        if (error.code === 'PGRST116' && expectedLockVersion !== undefined) {
-          throw new ValidationError('Schedule was modified by another process. Please refresh and try again.');
-        }
-        throw this.transformError(error, 'updateScheduleHelper');
+@withPerformanceLogging
+@withErrorLogging
+public async createScheduleHelper(userId: string): Promise < ScheduleHelper > {
+  return this.withRetry(async () => {
+    const { data, error } = await this.client
+      .from('schedule_helper')
+      .insert({
+        user_id: userId,
+        calls_today: 0,
+        daily_reset_date: new Date().toISOString().split('T')[0],
+        last_generated: new Date().toISOString(),
+        lock_version: 1
+      })
+      .select()
+      .single();
+
+    if (error) throw this.transformError(error, 'createScheduleHelper');
+
+    logger.info('Schedule helper created', {
+      userId,
+      component: 'DatabaseService',
+      action: 'createScheduleHelper'
+    });
+
+    return data;
+  }, 'createScheduleHelper');
+}
+
+@withPerformanceLogging
+@withErrorLogging
+public async updateScheduleHelper(
+  userId: string,
+  updates: Partial<ScheduleHelper>,
+  expectedLockVersion ?: number
+): Promise < ScheduleHelper > {
+  return this.withRetry(async () => {
+    let query = this.client
+      .from('schedule_helper')
+      .update({
+        ...updates,
+        updated_at: new Date().toISOString(),
+        lock_version: expectedLockVersion ? expectedLockVersion + 1 : undefined
+      })
+      .eq('user_id', userId);
+
+    // Optimistic locking for schedule updates
+    if (expectedLockVersion !== undefined) {
+      query = query.eq('lock_version', expectedLockVersion);
+    }
+
+    const { data, error } = await query.select().single();
+
+    if (error) {
+      if (error.code === 'PGRST116' && expectedLockVersion !== undefined) {
+        throw new ValidationError('Schedule was modified by another process. Please refresh and try again.');
       }
+      throw this.transformError(error, 'updateScheduleHelper');
+    }
 
-      this.invalidateCache(`schedule_helper_${userId}`);
+    this.invalidateCache(`schedule_helper_${userId}`);
 
-      logger.info('Schedule helper updated', {
-        userId,
-        component: 'DatabaseService',
-        action: 'updateScheduleHelper',
-        metadata: { updatedFields: Object.keys(updates) }
-      });
+    logger.info('Schedule helper updated', {
+      userId,
+      component: 'DatabaseService',
+      action: 'updateScheduleHelper',
+      metadata: { updatedFields: Object.keys(updates) }
+    });
 
-      return data;
-    }, 'updateScheduleHelper');
-  }
+    return data;
+  }, 'updateScheduleHelper');
+}
 
-  // ====================
-  // ANALYTICS & REPORTING
-  // ====================
+// ====================
+// ANALYTICS & REPORTING
+// ====================
 
-  @withPerformanceLogging
-  @withErrorLogging
-  public async getCallMetrics(userId: string, days: number = 30): Promise<any> {
-    const cacheKey = this.getCacheKey('metrics', { userId, days });
-    const cached = this.getFromCache<any>(cacheKey);
-    if (cached) return cached;
+@withPerformanceLogging
+@withErrorLogging
+public async getCallMetrics(userId: string, days: number = 30): Promise < any > {
+  const cacheKey = this.getCacheKey('metrics', { userId, days });
+  const cached = this.getFromCache<any>(cacheKey);
+  if(cached) return cached;
 
-    return this.withRetry(async () => {
-      const since = new Date();
-      since.setDate(since.getDate() - days);
+  return this.withRetry(async () => {
+    const since = new Date();
+    since.setDate(since.getDate() - days);
 
-      const { data, error } = await this.client
-        .from('call_history')
-        .select('*')
-        .eq('user_id', userId)
-        .gte('created_at', since.toISOString());
+    const { data, error } = await this.client
+      .from('call_history')
+      .select('*')
+      .eq('user_id', userId)
+      .gte('created_at', since.toISOString());
 
-      if (error) throw this.transformError(error, 'getCallMetrics');
+    if (error) throw this.transformError(error, 'getCallMetrics');
 
-      // Process metrics
-      const metrics = this.processCallMetrics(data || []);
+    // Process metrics
+    const metrics = this.processCallMetrics(data || []);
 
-      this.setCache(cacheKey, metrics, this.CACHE_TTL * 2); // Longer cache for analytics
-      return metrics;
-    }, 'getCallMetrics');
-  }
+    this.setCache(cacheKey, metrics, this.CACHE_TTL * 2); // Longer cache for analytics
+    return metrics;
+  }, 'getCallMetrics');
+}
 
   private processCallMetrics(callHistory: CallHistory[]): any {
-    const totalCalls = callHistory.length;
-    const successfulCalls = callHistory.filter(call => call.status === 'called').length;
-    const successRate = totalCalls > 0 ? (successfulCalls / totalCalls) * 100 : 0;
+  const totalCalls = callHistory.length;
+  const successfulCalls = callHistory.filter(call => call.status === 'called').length;
+  const successRate = totalCalls > 0 ? (successfulCalls / totalCalls) * 100 : 0;
 
-    const ratings = callHistory
-      .filter(call => call.success_rating !== null && call.success_rating !== undefined)
-      .map(call => call.success_rating!);
+  const ratings = callHistory
+    .filter(call => call.success_rating !== null && call.success_rating !== undefined)
+    .map(call => call.success_rating!);
 
-    const averageRating = ratings.length > 0
-      ? ratings.reduce((sum, rating) => sum + rating, 0) / ratings.length
-      : 0;
+  const averageRating = ratings.length > 0
+    ? ratings.reduce((sum, rating) => sum + rating, 0) / ratings.length
+    : 0;
 
-    // Platform usage analysis
-    const platformUsage = callHistory.reduce((acc, call) => {
-      if (call.platform_used) {
-        acc[call.platform_used] = (acc[call.platform_used] || 0) + 1;
-      }
-      return acc;
-    }, {} as Record<string, number>);
+  // Platform usage analysis
+  const platformUsage = callHistory.reduce((acc, call) => {
+    if (call.platform_used) {
+      acc[call.platform_used] = (acc[call.platform_used] || 0) + 1;
+    }
+    return acc;
+  }, {} as Record<string, number>);
 
-    return {
-      totalCalls,
-      successfulCalls,
-      successRate,
-      averageRating,
-      platformUsage,
-      period: callHistory.length > 0 ? {
-        start: Math.min(...callHistory.map(call => new Date(call.created_at).getTime())),
-        end: Math.max(...callHistory.map(call => new Date(call.created_at).getTime()))
-      } : null
-    };
-  }
+  return {
+    totalCalls,
+    successfulCalls,
+    successRate,
+    averageRating,
+    platformUsage,
+    period: callHistory.length > 0 ? {
+      start: Math.min(...callHistory.map(call => new Date(call.created_at).getTime())),
+      end: Math.max(...callHistory.map(call => new Date(call.created_at).getTime()))
+    } : null
+  };
+}
 
   // ====================
   // CLEANUP & MAINTENANCE
   // ====================
 
-  public async cleanup(): Promise<void> {
-    // Clear cache
-    this.cache.clear();
+  public async cleanup(): Promise < void> {
+  // Clear cache
+  this.cache.clear();
 
-    // Unsubscribe from real-time channels
-    await this.client.removeAllChannels();
+  // Unsubscribe from real-time channels
+  await this.client.removeAllChannels();
 
-    logger.info('Database service cleaned up', {
-      component: 'DatabaseService',
-      action: 'cleanup'
-    });
-  }
+  logger.info('Database service cleaned up', {
+    component: 'DatabaseService',
+    action: 'cleanup'
+  });
+}
 
   public getCacheStats(): { size: number; keys: string[] } {
-    return {
-      size: this.cache.size,
-      keys: Array.from(this.cache.keys())
-    };
-  }
+  return {
+    size: this.cache.size,
+    keys: Array.from(this.cache.keys())
+  };
+}
 }
 
 // Export singleton instance

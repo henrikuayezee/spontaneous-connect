@@ -8,13 +8,16 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 import { ErrorBoundary } from 'react-error-boundary';
 
-import { useAuth } from '@/hooks/useAuth';
+import { useAuth } from '@/features/auth/hooks/useAuth';
 import { logger } from '@/lib/logger';
 import { APP_CONFIG } from '@/types';
+import { offlineSyncManager } from '@/lib/offline-sync';
+import { analytics } from '@/lib/analytics';
+import { monitoring } from '@/lib/monitoring';
 
 // Lazy load components for code splitting
-const AuthFlow = lazy(() => import('@/components/AuthFlow'));
-const MainDashboard = lazy(() => import('@/components/Dashboard'));
+const AuthFlow = lazy(() => import('@/features/auth/components/AuthFlow'));
+const MainDashboard = lazy(() => import('@/features/dashboard/components/Dashboard'));
 const LoadingScreen = lazy(() => import('@/components/LoadingScreen'));
 const ErrorFallback = lazy(() => import('@/components/ErrorFallback'));
 
@@ -94,6 +97,10 @@ const AppContent: React.FC = () => {
 
   // Log app initialization
   React.useEffect(() => {
+    // Initialize analytics and monitoring
+    analytics.init();
+    monitoring.init();
+
     logger.info('App initialized', {
       component: 'App',
       action: 'initialize',
@@ -104,6 +111,21 @@ const AppContent: React.FC = () => {
       },
     });
   }, []);
+
+  // Identify user in analytics when authenticated
+  React.useEffect(() => {
+    if (user) {
+      analytics.identify(user.id, {
+        email: user.email,
+        name: user.name
+      });
+
+      monitoring.setUser({
+        id: user.id,
+        email: user.email
+      });
+    }
+  }, [user]);
 
   // Handle authentication errors
   React.useEffect(() => {

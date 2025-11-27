@@ -13,7 +13,7 @@ import {
   BlockRepeatType,
   APP_CONFIG,
 } from '@/types';
-import { logger, withPerformanceLogging, withErrorLogging } from './logger';
+import { logger, withPerformanceLogging, withErrorLogging } from '@/lib/logger';
 import { ValidationError, AppError } from '@/types';
 
 /**
@@ -43,15 +43,37 @@ export class CallScheduler {
         minGapMinutes: this.minGapMinutes,
         maxGapMinutes: this.maxGapMinutes,
         maxAttempts: this.maxAttempts,
+        timezone: user.timezone,
       },
     });
   }
 
   /**
+   * Get user's local time components from a Date object
+   */
+  private getUserLocalTime(date: Date): { hour: number; minute: number; day: string; timeStr: string } {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: this.user.timezone,
+      hour: 'numeric',
+      minute: 'numeric',
+      weekday: 'short',
+      hour12: false,
+    });
+
+    const parts = formatter.formatToParts(date);
+    const hour = parseInt(parts.find(p => p.type === 'hour')?.value || '0');
+    const minute = parseInt(parts.find(p => p.type === 'minute')?.value || '0');
+    const day = parts.find(p => p.type === 'weekday')?.value || '';
+
+    // Ensure 2-digit format for comparison (e.g., "09:05")
+    const timeStr = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+
+    return { hour, minute, day, timeStr };
+  }
+
+  /**
    * Generate the next optimal call time using intelligent algorithms
    */
-  @withPerformanceLogging
-  @withErrorLogging
   public async generateNextCallTime(
     blockedTimes: BlockedTime[],
     scheduleHelper: ScheduleHelper
@@ -64,6 +86,7 @@ export class CallScheduler {
         blockedTimesCount: blockedTimes.length,
         callsToday: scheduleHelper.calls_today,
         dailyLimit: this.user.daily_call_limit,
+        timezone: this.user.timezone,
       },
     });
 
@@ -110,7 +133,7 @@ export class CallScheduler {
             metadata: {
               nextCallTime: result.nextCallTime.toISOString(),
               totalAttempts,
-              strategy: strategy.name,
+              strategy: strategy.name, // Note: Function names might be minified in prod
             },
           });
 
@@ -373,16 +396,16 @@ export class CallScheduler {
   /**
    * Comprehensive time validation against all constraints
    */
-  @withPerformanceLogging
   public async validateCallTime(
     time: Date,
     blockedTimes: BlockedTime[],
     scheduleHelper: ScheduleHelper
   ): Promise<CallValidationResult> {
     try {
-      // Check if within daily time window
-      const timeStr = time.toTimeString().slice(0, 5);
-      if (timeStr < this.user.morning_start || timeStr > this.user.evening_end) {
+      const localTime = this.getUserLocalTime(time);
+
+      // Check if within daily time window (using Local Time)
+      if (localTime.timeStr < this.user.morning_start || localTime.timeStr > this.user.evening_end) {
         const suggestedTime = this.adjustToTimeWindow(time);
         return {
           isValid: false,
@@ -391,9 +414,8 @@ export class CallScheduler {
         };
       }
 
-      // Check if day is active
-      const dayName = time.toLocaleDateString('en', { weekday: 'short' });
-      if (!this.user.active_days.includes(dayName)) {
+      // Check if day is active (using Local Time)
+      if (!this.user.active_days.includes(localTime.day)) {
         const suggestedTime = this.getNextActiveDay(time);
         return {
           isValid: false,
@@ -461,21 +483,20 @@ export class CallScheduler {
    * Check if time falls within a blocked period
    */
   private async isTimeInBlockedPeriod(time: Date, block: BlockedTime): Promise<boolean> {
-    const timeStr = time.toTimeString().slice(0, 5);
-    const dayName = time.toLocaleDateString('en', { weekday: 'short' });
+    const localTime = this.getUserLocalTime(time);
 
-    // Check if day matches block schedule
+    // Check if day matches block schedule (using Local Time)
     switch (block.repeat_type) {
       case BlockRepeatType.DAILY:
         break; // Always applies
       case BlockRepeatType.WEEKDAYS:
-        if (['Sat', 'Sun'].includes(dayName)) return false;
+        if (['Sat', 'Sun'].includes(localTime.day)) return false;
         break;
       case BlockRepeatType.WEEKENDS:
-        if (!['Sat', 'Sun'].includes(dayName)) return false;
+        if (!['Sat', 'Sun'].includes(localTime.day)) return false;
         break;
       case BlockRepeatType.CUSTOM:
-        if (!block.days_of_week?.includes(dayName)) return false;
+        if (!block.days_of_week?.includes(localTime.day)) return false;
         break;
       case BlockRepeatType.ONCE:
         // For one-time blocks, we'd need to check specific dates
@@ -483,8 +504,8 @@ export class CallScheduler {
         break;
     }
 
-    // Check if time is within blocked period
-    return timeStr >= block.start_time && timeStr <= block.end_time;
+    // Check if time is within blocked period (using Local Time)
+    return localTime.timeStr >= block.start_time && localTime.timeStr <= block.end_time;
   }
 
   /**
@@ -542,8 +563,11 @@ export class CallScheduler {
    */
   private getNextOccurrenceOfTimeSlot(slot: { hour: number; minute: number }): Date {
     const now = new Date();
-    const proposedTime = new Date(now);
+    // Use UTC for base calculation, then adjust to user timezone
+    // This is a simplification; robust handling requires more complex date math
+    // For now, we'll generate a candidate and let validateCallTime check it
 
+    const proposedTime = new Date(now);
     proposedTime.setHours(slot.hour, slot.minute, 0, 0);
 
     // If the time has passed today, schedule for tomorrow
@@ -563,12 +587,21 @@ export class CallScheduler {
    */
   private adjustToTimeWindow(time: Date): Date {
     const adjusted = new Date(time);
-    const timeStr = time.toTimeString().slice(0, 5);
+    const localTime = this.getUserLocalTime(time);
 
-    if (timeStr < this.user.morning_start) {
+    if (localTime.timeStr < this.user.morning_start) {
+      // Set to morning start
       const [hour, minute] = this.user.morning_start.split(':').map(Number);
-      adjusted.setHours(hour, minute, 0, 0);
-    } else if (timeStr > this.user.evening_end) {
+      // Note: This sets LOCAL hours, but Date.setHours uses Local system time
+      // We need to be careful here. For MVP, we assume system time ~ user time
+      // or rely on the loop to find a valid time.
+      // A proper fix requires a library like Luxon or date-fns-tz, but we are avoiding deps.
+
+      // Approximate fix: Set UTC hours based on timezone offset
+      // This is complex without a library. 
+      // Strategy: Keep adding 15 mins until valid.
+      adjusted.setMinutes(adjusted.getMinutes() + 15);
+    } else if (localTime.timeStr > this.user.evening_end) {
       // Move to next day's morning
       adjusted.setDate(adjusted.getDate() + 1);
       const [hour, minute] = this.user.morning_start.split(':').map(Number);
@@ -584,21 +617,19 @@ export class CallScheduler {
   private getNextActiveDay(time: Date): Date {
     const adjusted = new Date(time);
     const activeDays = this.user.active_days.split(',');
-    const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
+    // Limit lookahead to 7 days
     for (let i = 1; i <= 7; i++) {
       adjusted.setDate(adjusted.getDate() + 1);
-      const dayName = dayNames[adjusted.getDay()];
+      const localTime = this.getUserLocalTime(adjusted);
 
-      if (activeDays.includes(dayName)) {
-        // Set to morning start time
-        const [hour, minute] = this.user.morning_start.split(':').map(Number);
-        adjusted.setHours(hour, minute, 0, 0);
+      if (activeDays.includes(localTime.day)) {
+        // Found an active day
         return adjusted;
       }
     }
 
-    // Fallback (should never happen if user has at least one active day)
+    // Fallback
     return new Date(time.getTime() + 24 * 60 * 60 * 1000);
   }
 
@@ -610,15 +641,13 @@ export class CallScheduler {
     block: BlockedTime
   ): Promise<Date> {
     const blockEnd = new Date(time);
-    const [endHour, endMinute] = block.end_time.split(':').map(Number);
+    // We need to parse block.end_time (HH:mm) and apply it to the current date
+    // respecting the user's timezone.
 
-    blockEnd.setHours(endHour, endMinute, 0, 0);
+    // Simplified approach: Add 30 mins and let validation loop handle it
+    blockEnd.setMinutes(blockEnd.getMinutes() + 30);
 
-    // Add buffer time after block ends
-    blockEnd.setMinutes(blockEnd.getMinutes() + 15);
-
-    // Ensure it's within user's active window
-    return this.adjustToTimeWindow(blockEnd);
+    return blockEnd;
   }
 
   /**
@@ -628,10 +657,10 @@ export class CallScheduler {
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
 
-    const [hours, minutes] = this.user.morning_start.split(':').map(Number);
-    tomorrow.setHours(hours, minutes, 0, 0);
+    // Set to a reasonable morning time (e.g., 10 AM)
+    tomorrow.setHours(10, 0, 0, 0);
 
-    // Add some randomness (0-60 minutes)
+    // Add some randomness
     const randomMinutes = Math.floor(Math.random() * 60);
     tomorrow.setMinutes(tomorrow.getMinutes() + randomMinutes);
 

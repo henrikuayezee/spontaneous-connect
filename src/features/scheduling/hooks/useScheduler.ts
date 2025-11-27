@@ -5,7 +5,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { User, ScheduleHelper, BlockedTime, SchedulingResult, CallHistory } from '@/types';
-import { CallScheduler, createScheduler, ScheduleUtils } from '@/lib/scheduler';
+import { CallScheduler, createScheduler, ScheduleUtils } from '@/features/scheduling/utils/scheduler';
 import { db } from '@/lib/supabase';
 import { logger } from '@/lib/logger';
 import { AppError, ValidationError } from '@/types';
@@ -24,11 +24,12 @@ interface SchedulerState {
 
 interface SchedulerActions {
   generateNextCall: () => Promise<SchedulingResult>;
-  markCallAttempted: (status: 'called' | 'skipped' | 'later', platform?: string) => Promise<void>;
+  markCallAttempted: (status: 'called' | 'skipped' | 'later', platform?: string) => Promise<string | null>;
   rescheduleCall: (delayMinutes: number) => Promise<void>;
   refreshSchedule: () => Promise<void>;
   validateCallTime: (time: Date) => Promise<boolean>;
   clearError: () => void;
+  submitFeedback: (callId: string, rating: number, notes?: string) => Promise<void>;
 }
 
 export function useScheduler(user: User | null): SchedulerState & SchedulerActions {
@@ -282,7 +283,7 @@ export function useScheduler(user: User | null): SchedulerState & SchedulerActio
   const markCallAttempted = useCallback(async (
     status: 'called' | 'skipped' | 'later',
     platform?: string
-  ): Promise<void> => {
+  ): Promise<string | null> => {
     if (!user || !state.nextCallTime || !state.scheduleHelper) {
       throw new ValidationError('Invalid state for marking call attempted');
     }
@@ -305,7 +306,7 @@ export function useScheduler(user: User | null): SchedulerState & SchedulerActio
         }
       };
 
-      await db.addCallHistoryEntry(historyEntry);
+      const newEntry = await db.addCallHistoryEntry(historyEntry);
 
       // Update schedule helper
       const updates: Partial<ScheduleHelper> = {
@@ -340,9 +341,12 @@ export function useScheduler(user: User | null): SchedulerState & SchedulerActio
           status,
           platform,
           scheduledTime: state.nextCallTime.toISOString(),
-          newCallsToday: updatedScheduleHelper.calls_today
+          newCallsToday: updatedScheduleHelper.calls_today,
+          callId: newEntry.id
         }
       });
+
+      return newEntry.id;
     } catch (error) {
       logger.error('Failed to mark call attempted', {
         userId: user.id,
@@ -542,6 +546,44 @@ export function useScheduler(user: User | null): SchedulerState & SchedulerActio
     setState(prev => ({ ...prev, error: null }));
   }, []);
 
+  const submitFeedback = useCallback(async (callId: string, rating: number, notes?: string): Promise<void> => {
+    if (!user) return;
+
+    try {
+      setState(prev => ({ ...prev, isLoading: true, error: null }));
+
+      await db.updateCallHistoryEntry(callId, {
+        success_rating: rating,
+        notes: notes || null,
+        status: 'called' // Ensure status is marked as called
+      });
+
+      logger.info('Feedback submitted', {
+        userId: user.id,
+        component: 'useScheduler',
+        action: 'submitFeedback',
+        metadata: { callId, rating }
+      });
+
+      setState(prev => ({ ...prev, isLoading: false }));
+    } catch (error) {
+      logger.error('Failed to submit feedback', {
+        userId: user.id,
+        component: 'useScheduler',
+        action: 'submitFeedback',
+        metadata: { error, callId }
+      });
+
+      setState(prev => ({
+        ...prev,
+        isLoading: false,
+        error: error instanceof Error ? error.message : 'Failed to submit feedback'
+      }));
+
+      throw error;
+    }
+  }, [user]);
+
   return {
     ...state,
     generateNextCall,
@@ -549,6 +591,7 @@ export function useScheduler(user: User | null): SchedulerState & SchedulerActio
     rescheduleCall,
     refreshSchedule,
     validateCallTime,
-    clearError
+    clearError,
+    submitFeedback
   };
 }
